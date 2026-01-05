@@ -1,0 +1,25 @@
+title: "Site Overview"
+extent_layer: "site_boundary"   # name of layer in QGIS project to use for map extent
+layers:
+  - path: "site_boundary"   # vector layer (gpkg/shp/geojson); path is relative to QGIS_PROJECT_DIR
+    name: "Proposal"
+    style:
+      fill_color: "255,0,0,0"       # transparent fill
+      outline_color: "255,0,0"      # red outline
+      outline_width: 1.2
+  - path: "six_inch_contours_ground_UTM10N"
+    name: "Contours"
+    style:
+      line_color: "150,75,0"        # brown lines
+      line_width: 0.4
+  - path:
+      type: "wms"
+      # Open, no-key base imagery (NASA GIBS BlueMarble)
+      url: "https://gibs.earthdata.nasa.gov/wms/epsg3857/best/wms.cgi?"
+      layers: "BlueMarble_ShadedRelief"
+      format: "image/png"
+      crs: "EPSG:3857"
+      name: "BlueMarble"
+options:
+  add_legend: true
+  add_north_arrow: true
