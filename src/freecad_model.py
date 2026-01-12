@@ -1,12 +1,12 @@
 import os
 import sys
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Optional
 
 from dotenv import load_dotenv
 
 
-def ensure_freecad(lib_dir: str | None = None):
+def ensure_freecad(lib_dir: Optional[str] = None):
     """Add FreeCAD library dir to sys.path when running outside the FreeCAD console."""
     if lib_dir and lib_dir not in sys.path:
         sys.path.append(lib_dir)
@@ -46,7 +46,7 @@ def export_solid(solid, out_path: Path, fmt: str = "step"):
     return out_path
 
 
-def load_env(env_path: str | None = None) -> dict:
+def load_env(env_path: Optional[str] = None) -> dict:
     load_dotenv(dotenv_path=env_path)
     return {
         "freecad_lib": os.environ.get("FREECAD_LIBRARY_DIR"),
@@ -58,7 +58,7 @@ def run_build(
     coords: Iterable[tuple[float, float]],
     height: float = 3.0,
     fmt: str = "step",
-    env_path: str | None = None,
+    env_path: Optional[str] = None,
 ) -> Path:
     cfg = load_env(env_path)
     ensure_freecad(cfg["freecad_lib"])
