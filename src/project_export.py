@@ -134,14 +134,13 @@ def generate_dem_from_contours(contour_layer, boundary_layer, cfg: dict, force: 
             return None
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
+    z_field = cfg.get("contour_z_field") or "Contour"
+    field_idx = contour_layer.fields().indexFromName(z_field)
+    if field_idx < 0:
+        return None
+    interp_data = f"{contour_layer.source()}::~::{field_idx}::~::1::~::0"
     params = {
-        "INTERPOLATION_DATA": [
-            {
-                "source": contour_layer,
-                "zField": cfg.get("contour_z_field") or "Contour",
-                "type": 1,
-            }
-        ],
+        "INTERPOLATION_DATA": interp_data,
         "METHOD": 0,
         "EXTENT": extent,
         "PIXEL_SIZE": pixel_size,

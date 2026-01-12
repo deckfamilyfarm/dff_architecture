@@ -5,6 +5,7 @@ from .freecad_model import run_build
 from .ogr2ogr_export import run_export_contours
 from .raster_export import run_export_imagery
 from .project_export import run_export_project
+from .dem_export import run_export_dem
 
 
 def parse_args():
@@ -54,6 +55,11 @@ def parse_args():
     proj_cmd.add_argument("--output", type=str, default=None, help="Path to output .qgz/.qgs")
     proj_cmd.add_argument("--force", action="store_true", help="Regenerate output even if it exists")
     proj_cmd.add_argument("--env", type=str, default=None, help="Path to .env file")
+
+    dem_cmd = sub.add_parser("export-dem", help="Generate a DEM GeoTIFF from contours.")
+    dem_cmd.add_argument("--output", type=str, default=None, help="Path to output GeoTIFF")
+    dem_cmd.add_argument("--force", action="store_true", help="Regenerate output even if it exists")
+    dem_cmd.add_argument("--env", type=str, default=None, help="Path to .env file")
 
     all_cmd = sub.add_parser("export-all", help="Export DXF, imagery, DEM, and QGIS project.")
     all_cmd.add_argument("--width", type=int, default=4096, help="Imagery width in pixels")
@@ -113,6 +119,14 @@ def main():
         )
         print(f"QGIS project written to {out}")
 
+    if args.command == "export-dem":
+        out = run_export_dem(
+            output_path=args.output,
+            force=args.force,
+            env_path=args.env,
+        )
+        print(f"DEM written to {out}")
+
     if args.command == "export-all":
         dxf = run_export_contours(
             force=args.force,
@@ -124,12 +138,17 @@ def main():
             force=args.force,
             env_path=args.env,
         )
+        dem = run_export_dem(
+            force=args.force,
+            env_path=args.env,
+        )
         project = run_export_project(
             force=args.force,
             env_path=args.env,
         )
         print(f"DXF written to {dxf}")
         print(f"Imagery written to {imagery}")
+        print(f"DEM written to {dem}")
         print(f"QGIS project written to {project}")
 
 

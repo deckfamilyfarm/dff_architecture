@@ -1,6 +1,7 @@
 import os
 import re
 import sys
+from urllib.parse import quote
 from pathlib import Path
 from typing import Optional
 
@@ -17,7 +18,12 @@ def add_qgis_to_path(prefix_path: Optional[str] = None):
     python_dir = prefix / "python"
     # QGIS ships PyQt in the OSGeo Python; add that site-packages too.
     py_osgeo = prefix.parent / "Python312" / "Lib" / "site-packages"
-    for path in (python_dir, python_dir / "site-packages", py_osgeo):
+    # macOS app bundle layout: .../Contents/Resources/python(+/plugins)
+    mac_resources = prefix.parent / "Resources" / "python" if "QGIS.app" in prefix.as_posix() else None
+    mac_plugins = mac_resources / "plugins" if mac_resources else None
+    for path in (python_dir, python_dir / "site-packages", py_osgeo, mac_resources, mac_plugins):
+        if not path:
+            continue
         if path.exists() and str(path) not in sys.path:
             sys.path.insert(0, str(path))
     # Ensure PATH includes Qt and QGIS bins so DLLs load.
@@ -26,7 +32,7 @@ def add_qgis_to_path(prefix_path: Optional[str] = None):
     base_bin = base / "bin"
     for path in (qt_bin, qgis_bin, base_bin):
         if path.exists():
-            os.environ["PATH"] = f"{path};{os.environ['PATH']}"
+            os.environ["PATH"] = f"{path}{os.pathsep}{os.environ['PATH']}"
 
 
 def check_python_version_matches(prefix_path: Optional[str] = None):
@@ -101,7 +107,8 @@ def load_data_layer(project_dir: Path, rel_path):
         return layer
     # XYZ config dict: {"type": "xyz", "url": "...", "zmin": 0, "zmax": 18, "crs": "EPSG:3857"}
     if isinstance(rel_path, dict) and rel_path.get("type") == "xyz":
-        url = rel_path["url"]
+        from qgis.core import QgsCoordinateReferenceSystem
+        url = quote(rel_path["url"], safe=":/?={}@%")
         zmin = rel_path.get("zmin")
         zmax = rel_path.get("zmax")
         crs = rel_path.get("crs")
@@ -116,6 +123,8 @@ def load_data_layer(project_dir: Path, rel_path):
         layer = QgsRasterLayer(uri, rel_path.get("name", "XYZ Tiles"), "wms")
         if not layer.isValid():
             raise RuntimeError(f"Failed to load XYZ layer: {url}")
+        if crs:
+            layer.setCrs(QgsCoordinateReferenceSystem(crs))
         return layer
 
     candidate = project_dir / rel_path

@@ -1,5 +1,8 @@
 # QGIS + FreeCAD Python scaffold
 
+## Project goals
+- See `GOALS.md`.
+
 Python starter to render maps from QGIS data (project or direct layers with YAML styling) and to drive FreeCAD for simple 3D extrusions.
 
 ## Setup (Windows)
@@ -44,8 +47,13 @@ Python starter to render maps from QGIS data (project or direct layers with YAML
 - `XYZ_CRS` – XYZ CRS (default `EPSG:3857`).
 - `SITE_BOUNDARY_PATH` – boundary layer path for clipping imagery (relative to `QGIS_PROJECT_DIR`).
 - `SITE_BOUNDARY_LAYER` – boundary layer name if loading from a QGIS project.
+- `SITE_BOUNDARY_CRS` – optional CRS override if the boundary layer has no CRS (e.g., `EPSG:26910`).
 - `IMAGERY_TIF_PATH` – output GeoTIFF path.
+- `IMAGERY_DEBUG_TIF_PATH` – optional path to save the un-clipped imagery.
+- `IMAGERY_OUTPUT_CRS` – optional CRS for imagery output (defaults to boundary CRS).
 - `GDALWARP_PATH` – optional explicit path to `gdalwarp`.
+- `GDAL_TRANSLATE_PATH` – optional explicit path to `gdal_translate`.
+- `KEEP_TEMP_IMAGERY` – set to a truthy value to save the un-clipped imagery for debugging.
 - `OUTPUT_QGIS_PROJECT_PATH` – output QGIS project path.
 - `OUTPUT_DEM_TIF_PATH` – optional DEM GeoTIFF to include in the project.
 - `DEM_PIXEL_SIZE` – DEM resolution in map units (default `1.0`).
@@ -81,11 +89,70 @@ Python starter to render maps from QGIS data (project or direct layers with YAML
   ```
   - If no DEM exists yet, it is generated from contours using `CONTOUR_Z_FIELD`.
   - Use `--force` to regenerate even if output exists.
+- Export DEM from contours:
+  ```bash
+  python -m src.main export-dem
+  ```
+  - Uses `OUTPUT_DEM_TIF_PATH` or writes to `./output/site_dem.tif`.
+  - Use `--force` to regenerate even if output exists.
 - Export everything in one command:
   ```bash
   python -m src.main export-all --width 4096 --height 4096
   ```
   - Uses `.env` for all paths and skips outputs that already exist unless `--force` is provided.
+
+## Build steps
+### Build basic layers (recommended)
+1) Export imagery:
+   ```bash
+   python -m src.main export-imagery --width 4096 --height 4096
+   ```
+2) Export contours (DXF):
+   ```bash
+   python -m src.main export-dxf
+   ```
+3) Export DEM:
+   ```bash
+   python -m src.main export-dem
+   ```
+4) Export QGIS project:
+   ```bash
+   python -m src.main export-qgis-project
+   ```
+
+### Optional: CesiumJS viewer (local)
+1) Build tiles:
+   ```bash
+   ./scripts/build-cesium-tiles.sh
+   ```
+2) Serve viewer:
+   ```bash
+   ./scripts/serve-viewer.sh
+   ```
+3) Open:
+   - `http://localhost:8000/viewer/index.html`
+
+## CesiumJS viewer (local)
+This creates local tiles and a simple viewer for 3D pan/zoom in the browser.
+
+### Build tiles (output/terrain + output/imagery)
+- Install tools:
+  - `gdal2tiles.py` (from GDAL/QGIS)
+  - `ctb-tile` (cesium-terrain-builder) optional
+- Run:
+  ```bash
+  ./scripts/build-cesium-tiles.sh
+  ```
+  - If `ctb-tile` is missing, a single-tile heightmap terrain is generated instead.
+  - Override imagery CRS for metadata generation with `IMAGERY_TIF_SRS=EPSG:3857`.
+  - For faster terrain, set `HEIGHTMAP_MAX_SIZE=512` (or similar) to downsample the heightmap.
+  - `HEIGHTMAP_MAX_SIZE` can be set in `.env` (the script loads it automatically).
+
+### Run viewer
+```bash
+./scripts/serve-viewer.sh
+```
+Then open `http://localhost:8000/viewer/index.html`.
 
 ## Map configs (YAML)
 - Define layers (vector/raster/WMS), styling, extent layer, legend, and north arrow in `configs/*.yaml`.

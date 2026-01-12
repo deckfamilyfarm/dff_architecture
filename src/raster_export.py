@@ -1,9 +1,11 @@
 import os
+import json
 import shutil
 import subprocess
 import tempfile
 from pathlib import Path
 from typing import Optional
+from urllib.request import Request, urlopen
 
 from dotenv import load_dotenv
 
@@ -33,6 +35,29 @@ def find_gdalwarp(explicit_path: Optional[str], qgis_prefix: Optional[str]) -> O
     return None
 
 
+def find_gdal_translate(explicit_path: Optional[str], qgis_prefix: Optional[str]) -> Optional[str]:
+    if explicit_path:
+        return explicit_path
+    which = shutil.which("gdal_translate")
+    if which:
+        return which
+    if not qgis_prefix:
+        return None
+    prefix = Path(qgis_prefix)
+    mac_candidate = prefix / "bin" / "gdal_translate"
+    if mac_candidate.exists():
+        return str(mac_candidate)
+    if prefix.name == "qgis" and prefix.parent.name == "apps":
+        root = prefix.parents[1]
+        win_candidate = root / "bin" / "gdal_translate.exe"
+        if win_candidate.exists():
+            return str(win_candidate)
+        nix_candidate = root / "bin" / "gdal_translate"
+        if nix_candidate.exists():
+            return str(nix_candidate)
+    return None
+
+
 def load_env(env_path: Optional[str] = None) -> dict:
     load_dotenv(dotenv_path=env_path)
     return {
@@ -50,10 +75,15 @@ def load_env(env_path: Optional[str] = None) -> dict:
         "xyz_zmin": os.environ.get("XYZ_ZMIN"),
         "xyz_zmax": os.environ.get("XYZ_ZMAX"),
         "xyz_crs": os.environ.get("XYZ_CRS"),
+        "imagery_output_crs": os.environ.get("IMAGERY_OUTPUT_CRS"),
         "imagery_path": os.environ.get("IMAGERY_TIF_PATH"),
+        "imagery_debug_path": os.environ.get("IMAGERY_DEBUG_TIF_PATH"),
         "boundary_path": os.environ.get("SITE_BOUNDARY_PATH"),
         "boundary_layer": os.environ.get("SITE_BOUNDARY_LAYER"),
+        "boundary_crs": os.environ.get("SITE_BOUNDARY_CRS"),
         "gdalwarp_path": os.environ.get("GDALWARP_PATH"),
+        "gdal_translate_path": os.environ.get("GDAL_TRANSLATE_PATH"),
+        "keep_temp_imagery": os.environ.get("KEEP_TEMP_IMAGERY"),
     }
 
 
@@ -68,6 +98,8 @@ def resolve_layer_path(project_dir: Path, path_or_name: str) -> Optional[Path]:
 
 
 def load_boundary_layer(cfg: dict, project):
+    from qgis.core import QgsCoordinateReferenceSystem
+
     boundary_path = cfg.get("boundary_path")
     boundary_layer_name = cfg.get("boundary_layer") or cfg.get("subject_layer")
     project_dir = cfg["project_dir"]
@@ -85,7 +117,10 @@ def load_boundary_layer(cfg: dict, project):
             return found[0]
     if boundary_layer_name:
         try:
-            return load_data_layer(project_dir, boundary_layer_name)
+            layer = load_data_layer(project_dir, boundary_layer_name)
+            if cfg.get("boundary_crs"):
+                layer.setCrs(QgsCoordinateReferenceSystem(cfg["boundary_crs"]))
+            return layer
         except Exception:
             return None
     return None
@@ -107,7 +142,11 @@ def render_wms_to_geotiff(
 
     if wms_layer.crs().isValid() and wms_layer.crs() != dest_crs:
         projector = QgsRasterProjector()
-        projector.setCrs(wms_layer.crs(), dest_crs, QgsProject.instance())
+        try:
+            ctx = QgsProject.instance().transformContext()
+            projector.setCrs(wms_layer.crs(), dest_crs, ctx)
+        except Exception:
+            projector.setCrs(wms_layer.crs(), dest_crs)
         pipe.insert(2, projector)
 
     writer = QgsRasterFileWriter(str(out_path))
@@ -115,6 +154,62 @@ def render_wms_to_geotiff(
     res = writer.writeRaster(pipe, width, height, extent, dest_crs)
     if res != QgsRasterFileWriter.NoError:
         raise RuntimeError(f"Failed to write GeoTIFF (error {res}).")
+
+
+def fallback_render_to_geotiff(
+    layer,
+    extent,
+    dest_crs,
+    out_path: Path,
+    width: int,
+    height: int,
+    gdal_translate_path: Optional[str],
+    qgis_prefix: Optional[str],
+):
+    from qgis.core import QgsMapSettings, QgsMapRendererParallelJob
+    try:
+        from PyQt5.QtCore import QSize
+        from PyQt5.QtGui import QColor
+    except Exception:
+        from qgis.PyQt.QtCore import QSize
+        from qgis.PyQt.QtGui import QColor
+
+    settings = QgsMapSettings()
+    settings.setLayers([layer])
+    settings.setExtent(extent)
+    settings.setOutputSize(QSize(width, height))
+    settings.setDestinationCrs(dest_crs)
+    settings.setBackgroundColor(QColor(0, 0, 0, 0))
+
+    job = QgsMapRendererParallelJob(settings)
+    job.start()
+    job.waitForFinished()
+    image = job.renderedImage()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_png = Path(tmpdir) / "render.png"
+        image.save(str(tmp_png), "PNG")
+
+        gdal_translate = find_gdal_translate(gdal_translate_path, qgis_prefix)
+        if not gdal_translate:
+            raise RuntimeError("gdal_translate not found. Set GDAL_TRANSLATE_PATH or add to PATH.")
+
+        srs = dest_crs.authid() or dest_crs.toWkt()
+        cmd = [
+            gdal_translate,
+            "-of",
+            "GTiff",
+            "-a_srs",
+            srs,
+            "-a_ullr",
+            str(extent.xMinimum()),
+            str(extent.yMaximum()),
+            str(extent.xMaximum()),
+            str(extent.yMinimum()),
+            str(tmp_png),
+            str(out_path),
+        ]
+        subprocess.run(cmd, check=True)
 
 
 def clip_with_processing(input_path: Path, mask_layer, out_path: Path) -> bool:
@@ -170,8 +265,11 @@ def clip_with_gdalwarp(
         str(input_path),
         str(out_path),
     ]
-    subprocess.run(cmd, check=True)
-    return True
+    try:
+        subprocess.run(cmd, check=True)
+        return True
+    except subprocess.CalledProcessError:
+        return False
 
 
 def run_export_imagery(
@@ -227,6 +325,11 @@ def run_export_imagery(
     boundary_layer = load_boundary_layer(cfg, project)
     if not boundary_layer:
         raise RuntimeError("Boundary layer not found. Set SITE_BOUNDARY_PATH or SITE_BOUNDARY_LAYER.")
+    if cfg.get("boundary_crs"):
+        from qgis.core import QgsCoordinateReferenceSystem
+        boundary_layer.setCrs(QgsCoordinateReferenceSystem(cfg["boundary_crs"]))
+    print(f"Boundary CRS: {boundary_layer.crs().authid() or 'unknown'}")
+    print(f"Boundary extent: {boundary_layer.extent()}")
 
     from qgis.core import QgsProject as _QgsProject
 
@@ -235,17 +338,49 @@ def run_export_imagery(
 
     dest_crs = boundary_layer.crs()
     extent = boundary_layer.extent()
+    if cfg.get("imagery_output_crs"):
+        from qgis.core import QgsCoordinateReferenceSystem, QgsCoordinateTransform
+        dest_crs = QgsCoordinateReferenceSystem(cfg["imagery_output_crs"])
+        if dest_crs.isValid() and boundary_layer.crs() != dest_crs:
+            transform = QgsCoordinateTransform(boundary_layer.crs(), dest_crs, _QgsProject.instance())
+            extent = transform.transformBoundingBox(extent)
+    if cfg["imagery_provider"] == "xyz":
+        test_xyz_tile(cfg, boundary_layer)
+    print(f"Imagery CRS: {dest_crs.authid() or 'unknown'}")
+    print(f"Imagery extent: {extent}")
 
     out_path = Path(output_path or cfg.get("imagery_path") or (cfg["output_dir"] / "site_imagery.tif"))
     if out_path.exists() and not force:
         return out_path
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    print(f"Imagery output target: {out_path}")
+    print(f"Imagery output dir exists: {out_path.parent.exists()}, writable: {os.access(out_path.parent, os.W_OK)}")
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp_tif = Path(tmpdir) / "wms_bbox.tif"
-        render_wms_to_geotiff(wms_layer, extent, dest_crs, tmp_tif, width, height)
+        try:
+            render_wms_to_geotiff(wms_layer, extent, dest_crs, tmp_tif, width, height)
+        except Exception:
+            fallback_render_to_geotiff(
+                wms_layer,
+                extent,
+                dest_crs,
+                tmp_tif,
+                width,
+                height,
+                cfg.get("gdal_translate_path"),
+                cfg.get("qgis_prefix"),
+            )
+        print(f"Temp imagery written: {tmp_tif} (exists={tmp_tif.exists()}, size={tmp_tif.stat().st_size if tmp_tif.exists() else 0})")
+        if cfg.get("keep_temp_imagery"):
+            debug_path = Path(
+                cfg.get("imagery_debug_path") or (cfg["output_dir"] / "site_imagery_debug.tif")
+            )
+            debug_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(tmp_tif, debug_path)
+            print(f"Temp imagery copied to: {debug_path}")
         clipped = clip_with_processing(tmp_tif, boundary_layer, out_path)
-        if not clipped:
+        if not clipped or not out_path.exists():
             clipped = clip_with_gdalwarp(
                 tmp_tif,
                 boundary_layer,
@@ -253,6 +388,62 @@ def run_export_imagery(
                 cfg.get("gdalwarp_path"),
                 cfg.get("qgis_prefix"),
             )
-        if not clipped:
-            tmp_tif.replace(out_path)
+        if not clipped or not out_path.exists():
+            shutil.copy2(tmp_tif, out_path)
+    if not out_path.exists():
+        raise RuntimeError(f"Imagery export failed to write output: {out_path}")
+    log_raster_stats(out_path)
     return out_path
+
+
+def test_xyz_tile(cfg: dict, boundary_layer) -> None:
+    from qgis.core import QgsCoordinateReferenceSystem, QgsCoordinateTransform, QgsProject
+
+    url_template = cfg.get("xyz_url")
+    if not url_template:
+        return
+    crs_src = boundary_layer.crs()
+    crs_wgs84 = QgsCoordinateReferenceSystem("EPSG:4326")
+    transform = QgsCoordinateTransform(crs_src, crs_wgs84, QgsProject.instance())
+    center = boundary_layer.extent().center()
+    center_wgs = transform.transform(center)
+    lat = center_wgs.y()
+    lon = center_wgs.x()
+    z = int(cfg.get("xyz_zmax") or 19)
+
+    import math
+
+    n = 2 ** z
+    xtile = int((lon + 180.0) / 360.0 * n)
+    lat = max(min(lat, 85.05112878), -85.05112878)
+    lat_rad = math.radians(lat)
+    ytile = int((1.0 - math.log(math.tan(lat_rad) + 1.0 / math.cos(lat_rad)) / math.pi) / 2.0 * n)
+    tile_url = url_template.replace("{z}", str(z)).replace("{x}", str(xtile)).replace("{y}", str(ytile))
+    req = Request(tile_url, headers={"User-Agent": "dff-tiles/1.0"})
+    try:
+        with urlopen(req, timeout=10) as resp:
+            if resp.status != 200:
+                raise RuntimeError(f"XYZ tile request failed: {resp.status} {tile_url}")
+            data = resp.read(256)
+            if len(data) < 128:
+                raise RuntimeError(f"XYZ tile response too small (len={len(data)}): {tile_url}")
+            if not (data.startswith(b"\x89PNG") or data.startswith(b"\xff\xd8")):
+                raise RuntimeError(f"XYZ tile response is not an image: {tile_url}")
+    except Exception as exc:
+        raise RuntimeError(f"XYZ tile test failed. Check URL/network access: {tile_url}") from exc
+    print(f"XYZ tile test OK: {tile_url}")
+
+
+def log_raster_stats(path: Path) -> None:
+    try:
+        out = subprocess.check_output(["gdalinfo", "-json", "-mm", str(path)], stderr=subprocess.DEVNULL, text=True)
+        info = json.loads(out)
+        band = info["bands"][0]
+        minv = band.get("minimum")
+        maxv = band.get("maximum")
+        if minv is not None and maxv is not None:
+            print(f"Imagery stats: min={minv} max={maxv}")
+        if minv == 0.0 and maxv == 0.0:
+            print("Warning: imagery appears blank (min/max both 0).")
+    except Exception:
+        return None
