@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Site Viewer</title>
+    <link
+      href="https://cesium.com/downloads/cesiumjs/releases/1.120/Build/Cesium/Widgets/widgets.css"
+      rel="stylesheet"
+    />
+    <style>
+      html, body, #cesiumContainer {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+        background: #0b0f12;
+      }
+      #hud {
+        position: absolute;
+        top: 12px;
+        left: 12px;
+        padding: 10px 12px;
+        background: rgba(10, 12, 16, 0.75);
+        color: #f1f1f1;
+        font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        border-radius: 6px;
+        z-index: 10;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="cesiumContainer"></div>
+    <div id="hud">
+      Terrain: <code>/output/terrain</code><br />
+      Imagery: <code>/output/imagery</code><br />
+      Open from repo root: <code>/viewer/index.html</code>
+    </div>
+    <script src="https://cesium.com/downloads/cesiumjs/releases/1.120/Build/Cesium/Cesium.js"></script>
+    <script>
+      const viewer = new Cesium.Viewer("cesiumContainer", {
+        timeline: false,
+        animation: false,
+        baseLayerPicker: false,
+        geocoder: false,
+        homeButton: true,
+        sceneModePicker: true,
+        navigationHelpButton: false,
+        fullscreenButton: false,
+        infoBox: false,
+        selectionIndicator: false,
+      });
+
+      async function loadHeightmapTerrain() {
+        const res = await fetch("/output/terrain/heightmap.json");
+        if (!res.ok) {
+          return null;
+        }
+        const meta = await res.json();
+        const img = await new Promise((resolve, reject) => {
+          const image = new Image();
+          image.onload = () => resolve(image);
+          image.onerror = reject;
+          image.src = "/output/terrain/heightmap.png";
+        });
+        const canvas = document.createElement("canvas");
+        canvas.width = img.width;
+        canvas.height = img.height;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0);
+        const data = ctx.getImageData(0, 0, img.width, img.height).data;
+        const buffer = new Uint8Array(img.width * img.height);
+        for (let i = 0; i < buffer.length; i++) {
+          buffer[i] = data[i * 4];
+        }
+        const rectangle = Cesium.Rectangle.fromDegrees(
+          meta.west,
+          meta.south,
+          meta.east,
+          meta.north
+        );
+        class SingleTileTerrainProvider {
+          constructor() {
+            this._tilingScheme = new Cesium.GeographicTilingScheme({ rectangle });
+            this._heightmapStructure = {
+              heightScale: meta.heightScale,
+              heightOffset: meta.heightOffset,
+              elementsPerHeight: 1,
+              stride: 1,
+              elementMultiplier: 1,
+              isBigEndian: false,
+            };
+            this._levelZeroError = Cesium.TerrainProvider.getEstimatedLevelZeroGeometricErrorForAHeightmap(
+              this._tilingScheme.ellipsoid,
+              meta.width,
+              this._tilingScheme.getNumberOfXTilesAtLevel(0)
+            );
+            this._ready = true;
+            this._baseTile = new Cesium.HeightmapTerrainData({
+              buffer,
+              width: meta.width,
+              height: meta.height,
+              structure: this._heightmapStructure,
+            });
+          }
+          get ready() {
+            return this._ready;
+          }
+          get tilingScheme() {
+            return this._tilingScheme;
+          }
+          get hasWaterMask() {
+            return false;
+          }
+          get hasVertexNormals() {
+            return false;
+          }
+          get availability() {
+            return undefined;
+          }
+          getTileDataAvailable() {
+            return true;
+          }
+          loadTileDataAvailability() {
+            return undefined;
+          }
+          getLevelMaximumGeometricError(level) {
+            return this._levelZeroError / (1 << level);
+          }
+          requestTileGeometry(x, y, level) {
+            if (level === 0 && x === 0 && y === 0) {
+              return Promise.resolve(this._baseTile);
+            }
+            return this._baseTile.upsample(
+              this._tilingScheme,
+              0,
+              0,
+              0,
+              x,
+              y,
+              level
+            );
+          }
+        }
+        return { provider: new SingleTileTerrainProvider(), rectangle };
+      }
+
+      async function loadImageryMeta() {
+        try {
+          const res = await fetch("/output/imagery/tiles.json");
+          if (!res.ok) {
+            return null;
+          }
+          const meta = await res.json();
+          const valid =
+            typeof meta.west === "number" &&
+            typeof meta.east === "number" &&
+            typeof meta.south === "number" &&
+            typeof meta.north === "number" &&
+            meta.west >= -180 &&
+            meta.east <= 180 &&
+            meta.south >= -90 &&
+            meta.north <= 90;
+          return valid ? meta : null;
+        } catch {
+          return null;
+        }
+      }
+
+      let homeRectangle = null;
+
+      function installHomeHandler() {
+        if (!homeRectangle) {
+          return;
+        }
+        viewer.homeButton.viewModel.command.beforeExecute.addEventListener(function (e) {
+          e.cancel = true;
+          viewer.camera.flyTo({ destination: homeRectangle });
+        });
+      }
+
+      async function configureScene() {
+        const params = new URLSearchParams(window.location.search);
+        const disableTerrain = params.get("terrain") === "0";
+        const heightmapTerrain = await loadHeightmapTerrain();
+        const imageryMeta = await loadImageryMeta();
+        if (heightmapTerrain && !disableTerrain) {
+          viewer.terrainProvider = heightmapTerrain.provider;
+        } else {
+          viewer.terrainProvider = new Cesium.EllipsoidTerrainProvider();
+        }
+        viewer.scene.morphTo3D(0.0);
+        viewer.scene.screenSpaceCameraController.enableTilt = true;
+        viewer.scene.screenSpaceCameraController.enableLook = true;
+        viewer.scene.globe.maximumScreenSpaceError = 8.0;
+        viewer.scene.screenSpaceCameraController.minimumZoomDistance = 1.0;
+        viewer.scene.screenSpaceCameraController.maximumZoomDistance = 5000000.0;
+        viewer.scene.screenSpaceCameraController.inertiaSpin = 0.7;
+        viewer.scene.screenSpaceCameraController.inertiaTranslate = 0.7;
+
+        const imageryOptions = {
+          url: "/output/imagery/{z}/{x}/{y}.png",
+          tilingScheme: new Cesium.WebMercatorTilingScheme(),
+        };
+        if (imageryMeta) {
+          imageryOptions.minimumLevel = imageryMeta.minZoom ?? 0;
+          imageryOptions.maximumLevel = imageryMeta.maxZoom ?? 19;
+          imageryOptions.rectangle = Cesium.Rectangle.fromDegrees(
+            imageryMeta.west,
+            imageryMeta.south,
+            imageryMeta.east,
+            imageryMeta.north
+          );
+        }
+        const imageryProvider = new Cesium.UrlTemplateImageryProvider(imageryOptions);
+        viewer.imageryLayers.removeAll();
+        viewer.imageryLayers.addImageryProvider(imageryProvider);
+
+        viewer.scene.globe.baseColor = Cesium.Color.fromCssColorString("#1b2733");
+        viewer.scene.globe.depthTestAgainstTerrain = true;
+        viewer.scene.screenSpaceCameraController.minimumZoomDistance = 5;
+        const targetRect = imageryMeta
+          ? Cesium.Rectangle.fromDegrees(
+              imageryMeta.west,
+              imageryMeta.south,
+              imageryMeta.east,
+              imageryMeta.north
+            )
+          : heightmapTerrain
+          ? heightmapTerrain.rectangle
+          : null;
+        if (targetRect) {
+          homeRectangle = targetRect;
+          installHomeHandler();
+          viewer.camera.flyTo({
+            destination: targetRect,
+            duration: 0.0,
+          });
+          const center = Cesium.Rectangle.center(targetRect);
+          viewer.entities.removeAll();
+          viewer.entities.add({
+            position: Cesium.Cartesian3.fromRadians(center.longitude, center.latitude),
+            point: { pixelSize: 8, color: Cesium.Color.YELLOW },
+          });
+          const ellipsoid = Cesium.Ellipsoid.WGS84;
+          const sw = Cesium.Cartographic.fromRadians(targetRect.west, targetRect.south);
+          const ne = Cesium.Cartographic.fromRadians(targetRect.east, targetRect.north);
+          const swC = ellipsoid.cartographicToCartesian(sw);
+          const neC = ellipsoid.cartographicToCartesian(ne);
+          const diagonal = Cesium.Cartesian3.distance(swC, neC);
+          viewer.scene.screenSpaceCameraController.maximumZoomDistance = Math.max(diagonal * 2, 1000.0);
+          viewer.scene.screenSpaceCameraController.minimumZoomDistance = 1.0;
+          const hud = document.getElementById("hud");
+          if (hud) {
+            hud.innerHTML =
+              `Center: ${Cesium.Math.toDegrees(center.latitude).toFixed(6)}, ` +
+              `${Cesium.Math.toDegrees(center.longitude).toFixed(6)}<br/>` +
+              `Zoom: ${imageryMeta ? imageryMeta.minZoom + "-" + imageryMeta.maxZoom : "n/a"}<br/>` +
+              `Terrain: ${disableTerrain ? "off" : "on"}<br/>` +
+              `Tilt: right-drag, or Alt+left-drag`;
+          }
+        }
+      }
+
+      configureScene();
+    </script>
+  </body>
+</html>

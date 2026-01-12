@@ -1,5 +1,8 @@
 # QGIS + FreeCAD Python scaffold
 
+## Project goals
+- See `GOALS.md`.
+
 Python starter to render maps from QGIS data (project or direct layers with YAML styling) and to drive FreeCAD for simple 3D extrusions.
 
 ## Setup (Windows)
@@ -11,6 +14,15 @@ Python starter to render maps from QGIS data (project or direct layers with YAML
   C:\Users\jacob\AppData\Local\Programs\OSGeo4W\apps\Python312\python.exe -m pip install -r requirements.txt
   ```
 
+## Setup (macOS)
+- Install QGIS and FreeCAD (app bundles from their official installers).
+- Use the QGIS Python (so bindings work): `/Applications/QGIS.app/Contents/MacOS/bin/python3`.
+- Copy `.env.example` to `.env` and fill values (keep `.env` untracked).
+- Install deps:
+  ```bash
+  /Applications/QGIS.app/Contents/MacOS/bin/python3 -m pip install -r requirements.txt
+  ```
+
 ## .env keys
 - `QGIS_PROJECT_DIR` – folder with your data or project.
 - `QGIS_PROJECT_FILE` – project filename; leave blank to load layers directly.
@@ -19,6 +31,33 @@ Python starter to render maps from QGIS data (project or direct layers with YAML
 - `OUTPUT_DIR` – where rendered maps/models are written.
 - `QGIS_PREFIX_PATH` – QGIS install prefix (e.g., `C:/Users/jacob/AppData/Local/Programs/OSGeo4W/apps/qgis`).
 - `FREECAD_LIBRARY_DIR` – path that contains `FreeCAD.pyd`/`FreeCAD.dll` (e.g., `C:/Program Files/FreeCAD 1.0/bin`).
+- `OGR2OGR_PATH` – optional explicit path to `ogr2ogr` (otherwise uses PATH/QGIS).
+- `GDAL_DATA` – optional path to GDAL data (otherwise inferred from QGIS).
+- `CONTOUR_SHP_PATH` – optional default contour shapefile for DXF export.
+- `CONTOUR_DXF_PATH` – optional default DXF output path.
+- `CONTOUR_Z_FIELD` – elevation field name (default `Contour`).
+- `OUTPUT_CONTOUR_INTERVAL` – optional contour interval (e.g., `1` for 1' spacing).
+- `OUTPUT_MERGE_FRAGMENTS` – optional boolean to merge line fragments per contour value.
+- `IMAGERY_PROVIDER` – imagery source (`wms` or `xyz`).
+- `WMS_URL` / `WMS_LAYERS` – WMS endpoint and layer id(s) for imagery export.
+- `WMS_FORMAT` – WMS image format (default `image/jpeg`).
+- `WMS_CRS` – optional CRS for WMS requests (e.g., `EPSG:3857`).
+- `XYZ_URL` – XYZ tile URL template.
+- `XYZ_ZMIN` / `XYZ_ZMAX` – zoom range for XYZ tiles.
+- `XYZ_CRS` – XYZ CRS (default `EPSG:3857`).
+- `SITE_BOUNDARY_PATH` – boundary layer path for clipping imagery (relative to `QGIS_PROJECT_DIR`).
+- `SITE_BOUNDARY_LAYER` – boundary layer name if loading from a QGIS project.
+- `SITE_BOUNDARY_CRS` – optional CRS override if the boundary layer has no CRS (e.g., `EPSG:26910`).
+- `IMAGERY_TIF_PATH` – output GeoTIFF path.
+- `IMAGERY_DEBUG_TIF_PATH` – optional path to save the un-clipped imagery.
+- `IMAGERY_OUTPUT_CRS` – optional CRS for imagery output (defaults to boundary CRS).
+- `GDALWARP_PATH` – optional explicit path to `gdalwarp`.
+- `GDAL_TRANSLATE_PATH` – optional explicit path to `gdal_translate`.
+- `KEEP_TEMP_IMAGERY` – set to a truthy value to save the un-clipped imagery for debugging.
+- `OUTPUT_QGIS_PROJECT_PATH` – output QGIS project path.
+- `OUTPUT_DEM_TIF_PATH` – optional DEM GeoTIFF to include in the project.
+- `DEM_PIXEL_SIZE` – DEM resolution in map units (default `1.0`).
+- `EXTRA_LAYERS` – comma-separated list of extra layers to include.
 
 ## Run commands
 - Render map with config:
@@ -29,6 +68,91 @@ Python starter to render maps from QGIS data (project or direct layers with YAML
   ```powershell
   C:\Users\jacob\AppData\Local\Programs\OSGeo4W\apps\Python312\python.exe -m src.main build-3d --height 6 --fmt step
   ```
+- Export 3D DXF from contours:
+  ```bash
+  python -m src.main export-dxf --input "/path/to/contours.shp" --output "/path/to/contours_3d.dxf" --z-field Contour
+  ```
+  - Optional filters:
+    - `--output-contour-interval 1` keeps only contours at 1' spacing (or any interval).
+    - `--merge-fragments` merges line fragments per contour value.
+  - If flags are omitted, defaults can come from `OUTPUT_CONTOUR_INTERVAL` and `OUTPUT_MERGE_FRAGMENTS` in `.env`.
+  - Use `--force` to regenerate even if output exists.
+- Export WMS imagery as GeoTIFF clipped to boundary:
+  ```bash
+  python -m src.main export-imagery --width 4096 --height 4096
+  ```
+  - Uses `WMS_URL`/`WMS_LAYERS` and clips to `SITE_BOUNDARY_PATH` or `SITE_BOUNDARY_LAYER`.
+  - Use `--force` to regenerate even if output exists.
+- Export a QGIS project that includes contours, imagery, boundary, and optional DEM:
+  ```bash
+  python -m src.main export-qgis-project
+  ```
+  - If no DEM exists yet, it is generated from contours using `CONTOUR_Z_FIELD`.
+  - Use `--force` to regenerate even if output exists.
+- Export DEM from contours:
+  ```bash
+  python -m src.main export-dem
+  ```
+  - Uses `OUTPUT_DEM_TIF_PATH` or writes to `./output/site_dem.tif`.
+  - Use `--force` to regenerate even if output exists.
+- Export everything in one command:
+  ```bash
+  python -m src.main export-all --width 4096 --height 4096
+  ```
+  - Uses `.env` for all paths and skips outputs that already exist unless `--force` is provided.
+
+## Build steps
+### Build basic layers (recommended)
+1) Export imagery:
+   ```bash
+   python -m src.main export-imagery --width 4096 --height 4096
+   ```
+2) Export contours (DXF):
+   ```bash
+   python -m src.main export-dxf
+   ```
+3) Export DEM:
+   ```bash
+   python -m src.main export-dem
+   ```
+4) Export QGIS project:
+   ```bash
+   python -m src.main export-qgis-project
+   ```
+
+### Optional: CesiumJS viewer (local)
+1) Build tiles:
+   ```bash
+   ./scripts/build-cesium-tiles.sh
+   ```
+2) Serve viewer:
+   ```bash
+   ./scripts/serve-viewer.sh
+   ```
+3) Open:
+   - `http://localhost:8000/viewer/index.html`
+
+## CesiumJS viewer (local)
+This creates local tiles and a simple viewer for 3D pan/zoom in the browser.
+
+### Build tiles (output/terrain + output/imagery)
+- Install tools:
+  - `gdal2tiles.py` (from GDAL/QGIS)
+  - `ctb-tile` (cesium-terrain-builder) optional
+- Run:
+  ```bash
+  ./scripts/build-cesium-tiles.sh
+  ```
+  - If `ctb-tile` is missing, a single-tile heightmap terrain is generated instead.
+  - Override imagery CRS for metadata generation with `IMAGERY_TIF_SRS=EPSG:3857`.
+  - For faster terrain, set `HEIGHTMAP_MAX_SIZE=512` (or similar) to downsample the heightmap.
+  - `HEIGHTMAP_MAX_SIZE` can be set in `.env` (the script loads it automatically).
+
+### Run viewer
+```bash
+./scripts/serve-viewer.sh
+```
+Then open `http://localhost:8000/viewer/index.html`.
 
 ## Map configs (YAML)
 - Define layers (vector/raster/WMS), styling, extent layer, legend, and north arrow in `configs/*.yaml`.
@@ -53,13 +177,12 @@ This documents how we built a 3D topo from 6" contours and imported into Rhino.
    - Elevation field: `Contour` (values in feet, 0.5 ft = 6" interval).
 
 2) Export 3D DXF with Z values:
-   ```powershell
-   $env:GDAL_DATA = "C:\Users\jacob\AppData\Local\Programs\OSGeo4W\apps\gdal\share\gdal"
-   C:\Users\jacob\AppData\Local\Programs\OSGeo4W\bin\ogr2ogr.exe -f DXF `
-     "C:\Deck Family Farm\HOUSE\Site\AutoCAD\six_inch_contours_ground_UTM10N_3d.dxf" `
-     "C:\Deck Family Farm\HOUSE\Site\GIS\six_inch_contours_ground_UTM10N.shp" `
-     -zfield Contour -nlt LINESTRING25D -skipfailures
+   ```bash
+   python -m src.main export-dxf --input "/path/to/six_inch_contours_ground_UTM10N.shp" \
+     --output "/path/to/six_inch_contours_ground_UTM10N_3d.dxf" --z-field Contour --output-contour-interval 1 --merge-fragments
    ```
+   - If `ogr2ogr` is not on PATH, set `OGR2OGR_PATH` in `.env` (Windows OSGeo4W example: `C:/OSGeo4W/bin/ogr2ogr.exe`).
+   - If `GDAL_DATA` is not set, it is inferred from `QGIS_PREFIX_PATH` (macOS QGIS example: `/Applications/QGIS.app/Contents/MacOS`).
 
 3) Rhino import and scale:
    - Import the DXF.

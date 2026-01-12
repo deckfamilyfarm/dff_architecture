@@ -1,13 +1,15 @@
 import os
 import re
 import sys
+from urllib.parse import quote
 from pathlib import Path
+from typing import Optional
 
 import yaml
 from dotenv import load_dotenv
 
 
-def add_qgis_to_path(prefix_path: str | None = None):
+def add_qgis_to_path(prefix_path: Optional[str] = None):
     """Add QGIS Python directory to sys.path so imports work."""
     if not prefix_path:
         return
@@ -16,7 +18,12 @@ def add_qgis_to_path(prefix_path: str | None = None):
     python_dir = prefix / "python"
     # QGIS ships PyQt in the OSGeo Python; add that site-packages too.
     py_osgeo = prefix.parent / "Python312" / "Lib" / "site-packages"
-    for path in (python_dir, python_dir / "site-packages", py_osgeo):
+    # macOS app bundle layout: .../Contents/Resources/python(+/plugins)
+    mac_resources = prefix.parent / "Resources" / "python" if "QGIS.app" in prefix.as_posix() else None
+    mac_plugins = mac_resources / "plugins" if mac_resources else None
+    for path in (python_dir, python_dir / "site-packages", py_osgeo, mac_resources, mac_plugins):
+        if not path:
+            continue
         if path.exists() and str(path) not in sys.path:
             sys.path.insert(0, str(path))
     # Ensure PATH includes Qt and QGIS bins so DLLs load.
@@ -25,10 +32,10 @@ def add_qgis_to_path(prefix_path: str | None = None):
     base_bin = base / "bin"
     for path in (qt_bin, qgis_bin, base_bin):
         if path.exists():
-            os.environ["PATH"] = f"{path};{os.environ['PATH']}"
+            os.environ["PATH"] = f"{path}{os.pathsep}{os.environ['PATH']}"
 
 
-def check_python_version_matches(prefix_path: str | None = None):
+def check_python_version_matches(prefix_path: Optional[str] = None):
     """Raise a clear error if the running Python doesn't match the bundled QGIS Python."""
     if not prefix_path:
         return
@@ -48,7 +55,7 @@ def check_python_version_matches(prefix_path: str | None = None):
         )
 
 
-def ensure_qgis(prefix_path: str | None = None) -> "QgsApplication":
+def ensure_qgis(prefix_path: Optional[str] = None) -> "QgsApplication":
     """Boot QGIS in a headless mode so we can load projects."""
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     os.environ.setdefault("GDAL_PAM_ENABLED", "NO")
@@ -97,6 +104,27 @@ def load_data_layer(project_dir: Path, rel_path):
         layer = QgsRasterLayer(uri, rel_path.get("name", layers), "wms")
         if not layer.isValid():
             raise RuntimeError(f"Failed to load WMS layer: {url} ({layers})")
+        return layer
+    # XYZ config dict: {"type": "xyz", "url": "...", "zmin": 0, "zmax": 18, "crs": "EPSG:3857"}
+    if isinstance(rel_path, dict) and rel_path.get("type") == "xyz":
+        from qgis.core import QgsCoordinateReferenceSystem
+        url = quote(rel_path["url"], safe=":/?={}@%")
+        zmin = rel_path.get("zmin")
+        zmax = rel_path.get("zmax")
+        crs = rel_path.get("crs")
+        params = [
+            "type=xyz",
+            f"url={url}",
+            f"zmin={zmin}" if zmin is not None else "",
+            f"zmax={zmax}" if zmax is not None else "",
+            f"crs={crs}" if crs else "",
+        ]
+        uri = "&".join([p for p in params if p])
+        layer = QgsRasterLayer(uri, rel_path.get("name", "XYZ Tiles"), "wms")
+        if not layer.isValid():
+            raise RuntimeError(f"Failed to load XYZ layer: {url}")
+        if crs:
+            layer.setCrs(QgsCoordinateReferenceSystem(crs))
         return layer
 
     candidate = project_dir / rel_path
@@ -177,7 +205,7 @@ def add_north_arrow(layout, page_size):
     layout.addLayoutItem(arrow)
 
 
-def apply_style(layer, style_cfg: dict | None, default_outline: bool = False):
+def apply_style(layer, style_cfg: Optional[dict], default_outline: bool = False):
     """Apply simple styling to a vector layer."""
     try:
         from qgis.core import QgsWkbTypes, QgsFillSymbol, QgsLineSymbol, QgsMarkerSymbol, QgsSingleSymbolRenderer
@@ -226,13 +254,13 @@ def apply_style(layer, style_cfg: dict | None, default_outline: bool = False):
 
 
 def render_map(
-    project: "QgsProject | None",
+    project: "Optional[QgsProject]",
     layers,
     out_path: Path,
     width: int = 1600,
     height: int = 1200,
-    title: str | None = None,
-    options: dict | None = None,
+    title: Optional[str] = None,
+    options: Optional[dict] = None,
     extent_layer=None,
 ):
     """Create a layout with provided layers and export as PNG."""
@@ -316,7 +344,7 @@ def render_map(
         raise RuntimeError(f"Failed to export map: {res}")
 
 
-def load_env(env_path: str | None = None) -> dict:
+def load_env(env_path: Optional[str] = None) -> dict:
     load_dotenv(dotenv_path=env_path)
     env = {
         "project_dir": Path(os.environ["QGIS_PROJECT_DIR"]),
@@ -331,7 +359,7 @@ def load_env(env_path: str | None = None) -> dict:
     return env
 
 
-def load_map_config(config_path: str | None):
+def load_map_config(config_path: Optional[str]):
     if not config_path:
         return {}
     cfg_file = Path(config_path)
@@ -349,8 +377,8 @@ def load_map_config(config_path: str | None):
 def run_render(
     width: int = 1600,
     height: int = 1200,
-    env_path: str | None = None,
-    config_path: str | None = None,
+    env_path: Optional[str] = None,
+    config_path: Optional[str] = None,
 ) -> Path:
     cfg = load_env(env_path)
     map_cfg = load_map_config(config_path)
