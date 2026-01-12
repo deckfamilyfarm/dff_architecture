@@ -45,6 +45,51 @@ Python starter to render maps from QGIS data (project or direct layers with YAML
 - `.gitignore` – ignores `.env`, `output/`, venvs, caches.
 - `AGENT.md` – quick notes for agents/contributors.
 
+## Topography workflow (QGIS contours -> Rhino NURBS)
+This documents how we built a 3D topo from 6" contours and imported into Rhino.
+
+1) Source contours (shapefile with elevation field):
+   - `C:\Deck Family Farm\HOUSE\Site\GIS\six_inch_contours_ground_UTM10N.shp`
+   - Elevation field: `Contour` (values in feet, 0.5 ft = 6" interval).
+
+2) Export 3D DXF with Z values:
+   ```powershell
+   $env:GDAL_DATA = "C:\Users\jacob\AppData\Local\Programs\OSGeo4W\apps\gdal\share\gdal"
+   C:\Users\jacob\AppData\Local\Programs\OSGeo4W\bin\ogr2ogr.exe -f DXF `
+     "C:\Deck Family Farm\HOUSE\Site\AutoCAD\six_inch_contours_ground_UTM10N_3d.dxf" `
+     "C:\Deck Family Farm\HOUSE\Site\GIS\six_inch_contours_ground_UTM10N.shp" `
+     -zfield Contour -nlt LINESTRING25D -skipfailures
+   ```
+
+3) Rhino import and scale:
+   - Import the DXF.
+   - XY is UTM meters, Z is feet. Keep Rhino model units in feet.
+   - Scale XY by 3.28084 (meters -> feet), keep Z unchanged:
+     ```
+     _Scale2D _Pause _Factor 3.28084 _Enter
+     ```
+
+4) Optional cleanup:
+   - Delete every other contour to get 1 ft spacing:
+     ```python
+     # -*- coding: utf-8 -*-
+     import rhinoscriptsyntax as rs
+     ids = rs.GetObjects("Select contour curves", rs.filter.curve, preselect=True)
+     if ids:
+         to_delete = []
+         for cid in ids:
+             z = rs.CurveStartPoint(cid).Z
+             if abs(z - round(z)) > 1e-6:
+                 to_delete.append(cid)
+         rs.DeleteObjects(to_delete)
+     ```
+   - Reduce point count for polylines: `ReducePolyline` (start with 0.05 ft tolerance).
+
+5) Build NURBS surface:
+   - Draw a boundary curve around the site.
+   - Select contours + boundary.
+   - Run `Patch` with `Trim=Yes`.
+
 ## Git
 - Install Git CLI (then `git init` in this repo).
 - Keep secrets out of version control (`.env`, outputs).***
